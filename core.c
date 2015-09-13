@@ -2273,6 +2273,16 @@ unsigned long long task_sched_runtime(struct task_struct *p)
 
 	return ns;
 }
+unsigned int get_temp(int cpu)
+{
+	int tmp=0,tmp1=0;
+	unsigned eax,edx,shift;
+	rdmsr_on_cpu(cpu, MSR_IA32_THERM_STATUS, &eax, &edx);
+	shift=eax>>16;
+	tmp=shift&0x7f;
+	tmp1=105-tmp;
+	return tmp1;
+}
 
 /*
  * This function gets called by the timer code, with HZ frequency.
@@ -2283,7 +2293,7 @@ void scheduler_tick(void)
 	int cpu = smp_processor_id();
 	struct rq *rq = cpu_rq(cpu);
 	struct task_struct *curr = rq->curr;
-
+	rq->temp=get_temp(cpu);
 	sched_clock_tick();
 
 	raw_spin_lock(&rq->lock);

@@ -408,6 +408,7 @@ struct rq {
 	 * nr_running and cpu_load should be in the same cacheline because
 	 * remote CPUs use both these fields when doing load calculation.
 	 */
+	unsigned int temp; 
 	unsigned int nr_running;
 #ifdef CONFIG_NUMA_BALANCING
 	unsigned int nr_numa_running;

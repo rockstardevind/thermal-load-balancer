@@ -5988,78 +5988,28 @@ out_balanced:
 }
 
 /*
- * find_busiest_queue - find the busiest runqueue among the cpus in group.
+ * find_hotest_queue - find the hotest runqueue among the cpus in group.
  */
-static struct rq *find_busiest_queue(struct lb_env *env,
+
+static struct rq *find_hotest_queue(struct lb_env *env,
 				     struct sched_group *group)
 {
-	struct rq *busiest = NULL, *rq;
-	unsigned long busiest_load = 0, busiest_power = 1;
+	struct rq *hotrq = NULL, *rq;
+	unsigned int hot_temp = 0;
 	int i;
 
 	for_each_cpu_and(i, sched_group_cpus(group), env->cpus) {
-		unsigned long power, capacity, wl;
-		enum fbq_type rt;
-
-		rq = cpu_rq(i);
-		rt = fbq_classify_rq(rq);
-
-		/*
-		 * We classify groups/runqueues into three groups:
-		 *  - regular: there are !numa tasks
-		 *  - remote:  there are numa tasks that run on the 'wrong' node
-		 *  - all:     there is no distinction
-		 *
-		 * In order to avoid migrating ideally placed numa tasks,
-		 * ignore those when there's better options.
-		 *
-		 * If we ignore the actual busiest queue to migrate another
-		 * task, the next balance pass can still reduce the busiest
-		 * queue by moving tasks around inside the node.
-		 *
-		 * If we cannot move enough load due to this classification
-		 * the next pass will adjust the group classification and
-		 * allow migration of more tasks.
-		 *
-		 * Both cases only affect the total convergence complexity.
-		 */
-		if (rt > env->fbq_type)
-			continue;
-
-		power = power_of(i);
-		capacity = DIV_ROUND_CLOSEST(power, SCHED_POWER_SCALE);
-		if (!capacity)
-			capacity = fix_small_capacity(env->sd, group);
-
-		wl = weighted_cpuload(i);
-
-		/*
-		 * When comparing with imbalance, use weighted_cpuload()
-		 * which is not scaled with the cpu power.
-		 */
-		if (capacity && rq->nr_running == 1 && wl > env->imbalance)
-			continue;
-
-		/*
-		 * For the load comparisons with the other cpu's, consider
-		 * the weighted_cpuload() scaled with the cpu power, so that
-		 * the load can be moved away from the cpu that is potentially
-		 * running at a lower capacity.
-		 *
-		 * Thus we're looking for max(wl_i / power_i), crosswise
-		 * multiplication to rid ourselves of the division works out
-		 * to: wl_i * power_j > wl_j * power_i;  where j is our
-		 * previous maximum.
-		 */
-		if (wl * busiest_power > busiest_load * power) {
-			busiest_load = wl;
-			busiest_power = power;
-			busiest = rq;
+				
+		if (rq->temp > hot_temp) {
+			hot_temp = rq->temp;
+			hotrq = rq;
 		}
 	}
 
-	return busiest;
+	return hotrq;
 }
+
+
 
 /*
  * Max backoff if we encounter pinned tasks. Pretty arbitrary value, but
@@ -6135,8 +6085,9 @@ static int load_balance(int this_cpu, struct rq *this_rq,
 	int ld_moved, cur_ld_moved, active_balance = 0;
 	struct sched_domain *sd_parent = sd->parent;
 	struct sched_group *group;
-	struct rq *busiest;
+	struct rq *hotest;
 	unsigned long flags;
+	unsigned int tgap=3;
 	struct cpumask *cpus = __get_cpu_var(load_balance_mask);
 
 	struct lb_env env = {
@@ -6173,40 +6124,41 @@ redo:
 		goto out_balanced;
 	}
 
-	busiest = find_busiest_queue(&env, group);
-	if (!busiest) {
+	hotest = find_hotest_queue(&env, group);//find the hotest queue within the group  
+	if (!hotest) {
 		schedstat_inc(sd, lb_nobusyq[idle]);
 		goto out_balanced;
 	}
 
-	BUG_ON(busiest == env.dst_rq);
+	BUG_ON(hotest == env.dst_rq);
 
 	schedstat_add(sd, lb_imbalance[idle], env.imbalance);
 
 	ld_moved = 0;
-	if (busiest->nr_running > 1) {
-		/*
-		 * Attempt to move tasks. If find_busiest_group has found
-		 * an imbalance but busiest->nr_running <= 1, the group is
-		 * still unbalanced. ld_moved simply stays zero, so it is
-		 * correctly treated as an imbalance.
-		 */
+	/*  no of task on curent cpu is more than two then set tgap=5 */
+	if(this_rq->nr_running >2) 
+	tgap=5;
+	else if (this_rq->nr_running <1)/*  if current cpu is idle then set tgap=0 */
+	tgap=0;
+	if(hotest->temp  - this_rq->temp >= tgap) /*  check thermal imbalance */
+ 	if (hotest->nr_running > 1) {
+	/* update structure lb_env */
 		env.flags |= LBF_ALL_PINNED;
-		env.src_cpu   = busiest->cpu;
-		env.src_rq    = busiest;
-		env.loop_max  = min(sysctl_sched_nr_migrate, busiest->nr_running);
+		env.src_cpu   = hotest->cpu;
+		env.src_rq    = hotest;
+		env.loop_max  = min(sysctl_sched_nr_migrate, hotest->nr_running);
 
 more_balance:
-		local_irq_save(flags);
-		double_rq_lock(env.dst_rq, busiest);
+		local_irq_save(flags);/* save status of softirq and hardirq */
+		double_rq_lock(env.dst_rq, hotest); /* lock cureent and hottest queue*/
 
 		/*
 		 * cur_ld_moved - load moved in current iteration
 		 * ld_moved     - cumulative load moved across iterations
 		 */
-		cur_ld_moved = move_tasks(&env);
+		cur_ld_moved = move_tasks(&env);/* internally call move_task to perform load balancing*/ 
 		ld_moved += cur_ld_moved;
-		double_rq_unlock(env.dst_rq, busiest);
+		double_rq_unlock(env.dst_rq, hotest);
 		local_irq_restore(flags);
 
 		/*
@@ -6271,7 +6223,7 @@ more_balance:
 
 		/* All tasks on this runqueue were pinned by CPU affinity */
 		if (unlikely(env.flags & LBF_ALL_PINNED)) {
-			cpumask_clear_cpu(cpu_of(busiest), cpus);
+			cpumask_clear_cpu(cpu_of(hotest), cpus);
 			if (!cpumask_empty(cpus)) {
 				env.loop = 0;
 				env.loop_break = sched_nr_migrate_break;
@@ -6293,15 +6245,15 @@ more_balance:
 			sd->nr_balance_failed++;
 
 		if (need_active_balance(&env)) {
-			raw_spin_lock_irqsave(&busiest->lock, flags);
+			raw_spin_lock_irqsave(&hotest->lock, flags);
 
 			/* don't kick the active_load_balance_cpu_stop,
 			 * if the curr task on busiest cpu can't be
 			 * moved to this_cpu
 			 */
 			if (!cpumask_test_cpu(this_cpu,
-					tsk_cpus_allowed(busiest->curr))) {
-				raw_spin_unlock_irqrestore(&busiest->lock,
+					tsk_cpus_allowed(hotest->curr))) {
+				raw_spin_unlock_irqrestore(&hotest->lock,
 							    flags);
 				env.flags |= LBF_ALL_PINNED;
 				goto out_one_pinned;
@@ -6312,17 +6264,17 @@ more_balance:
 			 * ->active_balance_work.  Once set, it's cleared
 			 * only after active load balance is finished.
 			 */
-			if (!busiest->active_balance) {
-				busiest->active_balance = 1;
-				busiest->push_cpu = this_cpu;
+			if (!hotest->active_balance) {
+				hotest->active_balance = 1;
+				hotest->push_cpu = this_cpu;
 				active_balance = 1;
 			}
-			raw_spin_unlock_irqrestore(&busiest->lock, flags);
+			raw_spin_unlock_irqrestore(&hotest->lock, flags);
 
 			if (active_balance) {
-				stop_one_cpu_nowait(cpu_of(busiest),
-					active_load_balance_cpu_stop, busiest,
-					&busiest->active_balance_work);
+				stop_one_cpu_nowait(cpu_of(hotest),
+					active_load_balance_cpu_stop, hotest,
+					&hotest->active_balance_work);
 			}
 
 			/*
